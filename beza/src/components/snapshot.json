@@ -1,0 +1,11 @@
+{
+  "document": {
+    "pages": {
+      "page:1": {
+        "shapes": {
+          "shape:1": { "type": "frame", "meta": { "name": "Test Shape" } }
+        }
+      }
+    }
+  }
+}
