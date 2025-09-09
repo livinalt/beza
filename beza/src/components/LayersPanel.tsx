@@ -1,11 +1,10 @@
-
 import "./layer-panel.css";
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Editor } from "@tldraw/tldraw";
+import { Editor, TLShapeId, TLParentId} from "@tldraw/tldraw";
 import { Eye, EyeOff, Layers, MoveUp, MoveDown, Edit2 } from "lucide-react";
 
 interface Layer {
-    id: string;
+    id: TLShapeId;
     name: string;
     isHidden: boolean;
     depth: number;
@@ -17,33 +16,39 @@ interface LayersPanelProps {
 
 export default function LayersPanel({ editorRef }: LayersPanelProps) {
     const [layers, setLayers] = useState<Layer[]>([]);
-    const [editingId, setEditingId] = useState<string | null>(null);
+    const [editingId, setEditingId] = useState<TLShapeId | null>(null);
     const [editName, setEditName] = useState<string>("");
     const inputRef = useRef<HTMLInputElement>(null);
     const updateTimeout = useRef<NodeJS.Timeout | null>(null);
 
-    const buildLayerTree = useCallback((editor: Editor, parentId: string, depth: number = 0): Layer[] => {
-        const shapeIds = editor.getSortedChildIdsForParent(parentId);
-        const layers: Layer[] = [];
-        shapeIds.forEach((id, index) => {
-            const shape = editor.getShape(id);
-            if (!shape) {
-                console.warn("Shape not found:", id);
-                return;
-            }
-            const meta = shape.meta as { name?: string; hidden?: boolean } | undefined;
-            layers.push({
-                id,
-                name: meta?.name || `Layer ${index + 1}`,
-                isHidden: editor.isShapeHidden(id) || false,
-                depth,
+    const buildLayerTree = useCallback(
+        (editor: Editor, parentId: TLParentId, depth: number = 0): Layer[] => {
+            const shapeIds = editor.getSortedChildIdsForParent(parentId);
+            const layers: Layer[] = [];
+
+            shapeIds.forEach((id, index) => {
+                const shape = editor.getShape(id);
+                if (!shape) {
+                    console.warn("Shape not found:", id);
+                    return;
+                }
+                const meta = shape.meta as { name?: string; hidden?: boolean } | undefined;
+                layers.push({
+                    id,
+                    name: meta?.name || `Layer ${index + 1}`,
+                    isHidden: meta?.hidden ?? false, // Use meta.hidden, default to false
+                    depth,
+                });
+
+                if (editor.getSortedChildIdsForParent(id as TLParentId).length > 0) {
+                    layers.push(...buildLayerTree(editor, id as TLParentId, depth + 1));
+                }
             });
-            if (editor.getSortedChildIdsForParent(id).length > 0) {
-                layers.push(...buildLayerTree(editor, id, depth + 1));
-            }
-        });
-        return layers;
-    }, []);
+
+            return layers;
+        },
+        []
+    );
 
     const updateLayers = useCallback(() => {
         if (!editorRef.current) return;
@@ -51,7 +56,6 @@ export default function LayersPanel({ editorRef }: LayersPanelProps) {
             const newLayers = buildLayerTree(editorRef.current, editorRef.current.getCurrentPageId());
             setLayers((prev) => {
                 if (JSON.stringify(newLayers) === JSON.stringify(prev)) return prev;
-                console.log("Layers updated:", newLayers);
                 return newLayers;
             });
         } catch (error) {
@@ -64,27 +68,37 @@ export default function LayersPanel({ editorRef }: LayersPanelProps) {
         const editor = editorRef.current;
 
         updateLayers();
+
         const handleStoreUpdate = () => {
             if (updateTimeout.current) clearTimeout(updateTimeout.current);
             updateTimeout.current = setTimeout(updateLayers, 300);
         };
 
-        const unsubscribe = editor.store.listen(handleStoreUpdate, { scope: "shape" });
+        const unsubscribe = editor.store.listen(handleStoreUpdate, { scope: "all" });
         return () => {
             unsubscribe();
             if (updateTimeout.current) clearTimeout(updateTimeout.current);
         };
     }, [editorRef, updateLayers]);
 
-    const toggleVisibility = (id: string) => {
+    const toggleVisibility = (id: TLShapeId) => {
         if (!editorRef.current) return;
         const editor = editorRef.current;
         const shape = editor.getShape(id);
         if (!shape) return;
-        editor.setShapeHidden(id, !editor.isShapeHidden(id));
+
+        const currentHidden = (shape.meta as { hidden?: boolean })?.hidden ?? false;
+        editor.updateShapes([
+            {
+                id,
+                type: shape.type,
+                meta: { ...shape.meta, hidden: !currentHidden }, // Toggle hidden state
+                props: { ...shape.props, opacity: currentHidden ? 1 : 0 }, // Toggle opacity
+            },
+        ]);
     };
 
-    const moveLayerUp = (id: string) => {
+    const moveLayerUp = (id: TLShapeId) => {
         if (!editorRef.current) return;
         const editor = editorRef.current;
         const shapes = editor.getSortedChildIdsForParent(editor.getCurrentPageId());
@@ -92,7 +106,7 @@ export default function LayersPanel({ editorRef }: LayersPanelProps) {
         if (index < shapes.length - 1) editor.bringForward([id]);
     };
 
-    const moveLayerDown = (id: string) => {
+    const moveLayerDown = (id: TLShapeId) => {
         if (!editorRef.current) return;
         const editor = editorRef.current;
         const shapes = editor.getSortedChildIdsForParent(editor.getCurrentPageId());
@@ -100,12 +114,12 @@ export default function LayersPanel({ editorRef }: LayersPanelProps) {
         if (index > 0) editor.sendBackward([id]);
     };
 
-    const startEditing = (id: string, currentName: string) => {
+    const startEditing = (id: TLShapeId, currentName: string) => {
         setEditingId(id);
         setEditName(currentName);
     };
 
-    const saveName = (id: string) => {
+    const saveName = (id: TLShapeId) => {
         if (!editorRef.current || !editName.trim()) {
             setEditingId(null);
             return;
@@ -126,7 +140,7 @@ export default function LayersPanel({ editorRef }: LayersPanelProps) {
         setEditingId(null);
     };
 
-    const handleKeyDown = (e: React.KeyboardEvent, id: string) => {
+    const handleKeyDown = (e: React.KeyboardEvent, id: TLShapeId) => {
         if (e.key === "Enter") saveName(id);
         else if (e.key === "Escape") setEditingId(null);
     };
