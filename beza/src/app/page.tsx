@@ -1,9 +1,11 @@
 "use client";
 
-// import ThemeToggle from "@/components/ThemeToggle";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { v4 as uuidv4 } from "uuid";
+import Image from "next/image";
+// import BezaBoard from "../../public/BezaBoard.png";
+// import BezaBoard from "../../public/BezaBoard.png";
 
 export default function Home() {
   const router = useRouter();
@@ -27,7 +29,6 @@ export default function Home() {
             </span>
           </div>
           <div className="flex items-center gap-4">
-            {/* <ThemeToggle /> */}
             <button
               className="rounded-xl bg-gradient-to-r from-indigo-600 to-fuchsia-500 text-white px-5 py-2 text-sm font-medium hover:scale-105 transition-all"
               onClick={createBoard}
@@ -42,6 +43,7 @@ export default function Home() {
       {/* Hero */}
       <main className="flex-grow flex items-center">
         <div className="mx-auto max-w-6xl px-6 grid md:grid-cols-2 gap-12 items-center">
+          {/* Left Side Text */}
           <div className="space-y-6">
             <div className="inline-flex items-center gap-2 rounded-full border border-neutral-200 dark:border-neutral-700 px-3 py-1 text-xs text-neutral-600 dark:text-neutral-300 bg-white/60 dark:bg-zinc-800/60 backdrop-blur-sm">
               <span className="h-2 w-2 rounded-full bg-green-500" /> Live & Fun
@@ -83,15 +85,14 @@ export default function Home() {
                 <span className="h-3 w-3 rounded-full bg-emerald-400" />
                 <span className="ml-2 opacity-60">Live Canvas</span>
               </div>
-              <div className="aspect-video bg-gradient-to-br from-indigo-100 to-fuchsia-100 dark:from-zinc-800 dark:to-zinc-900 flex items-center justify-center">
-                <div className="rounded-2xl bg-white/80 dark:bg-zinc-800/70 px-6 py-5 shadow-lg text-center">
-                  <div className="text-sm text-neutral-600 dark:text-neutral-300">
-                    Live Preview
-                  </div>
-                  <div className="mt-2 text-xl font-semibold">
-                    Your canvas stream appears here
-                  </div>
-                </div>
+              <div className="aspect-video relative">
+                <Image
+                  src="/BezaBoard.png"
+                  alt="canvas"
+                  fill
+                  priority
+                  className="object-cover transition-opacity duration-700 ease-in-out hover:opacity-90"
+                />
               </div>
             </div>
           </div>
