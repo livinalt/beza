@@ -65,7 +65,7 @@ function extractImageUrlFromDaydreamResponse(res: unknown): string | null {
 }
 
 /* ---------- Component ---------- */
-export default function Board(): JSX.Element {
+export default function Board(): React.ReactElement {
     const { roomId } = useParams();
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const editorRef = useRef<Editor | null>(null);
