@@ -2,14 +2,26 @@
 
 import { useEffect, useRef, useCallback, useState } from "react";
 import dynamic from "next/dynamic";
-import { Editor, TLComponents, TLUnknownShape, StoreBeforeCreateHandler, RecordsDiff, TLRecord, ChangeSource } from "@tldraw/tldraw";
+import {
+    Editor,
+    TLComponents,
+    TLUnknownShape,
+    StoreBeforeCreateHandler,
+    RecordsDiff,
+    TLRecord,
+    ChangeSource,
+} from "@tldraw/tldraw";
+import { getSnapshot } from "tldraw";
+import debounce from "lodash.debounce";
 import "@tldraw/tldraw/tldraw.css";
 import LayersPanel from "./LayersPanel";
 
 // Dynamic import for Tldraw to disable SSR
-const Tldraw = dynamic(() => import("@tldraw/tldraw").then((mod) => mod.Tldraw), {
-    ssr: false,
-});
+const Tldraw = dynamic(
+    () => import("@tldraw/tldraw").then((mod) => mod.Tldraw),
+    { ssr: false }
+);
+
 
 interface ShapeMeta {
     name?: string;
@@ -36,7 +48,36 @@ export default function Canvas({
     const isMounted = useRef(false);
     const [isDarkMode, setIsDarkMode] = useState(false);
 
-    // Detect dark mode on client-side only
+    // ✅ Debounced save wrapper (non-blocking)
+    const debouncedSave = useCallback(
+        debounce(() => {
+            const editor = editorRef.current;
+            if (!editor) return;
+
+            try {
+                const snapshot = getSnapshot(editor.store);
+
+                const save = () => {
+                    try {
+                        saveCanvasState(); // calls your higher-level state updater
+                    } catch (err) {
+                        console.error("Failed to save snapshot:", err);
+                    }
+                };
+
+                if (typeof window !== "undefined" && window.requestIdleCallback) {
+                    window.requestIdleCallback(save);
+                } else {
+                    setTimeout(save, 0);
+                }
+            } catch (err) {
+                console.error("Snapshot error:", err);
+            }
+        }, 800),
+        [editorRef, saveCanvasState]
+    );
+
+    // Detect dark mode
     useEffect(() => {
         if (typeof window === "undefined") return;
 
@@ -66,27 +107,22 @@ export default function Canvas({
 
         const container = containerRef.current;
         const handleClick = () => {
-            if (editorRef.current) {
-                editorRef.current.focus();
-            }
+            editorRef.current?.focus();
         };
 
         container.addEventListener("click", handleClick, { passive: true });
-        if (editorRef.current) {
-            editorRef.current.focus();
-        }
+        editorRef.current?.focus();
 
         return () => {
             container.removeEventListener("click", handleClick);
         };
     }, [editorRef]);
 
-    // Handle initial shape creation and shape creation events
+    // Initial shape creation
     useEffect(() => {
         if (!editorRef.current) return;
         const editor = editorRef.current;
 
-        // Add initial shapes if none exist
         if (editor.getCurrentPageShapes().length === 0) {
             editor.createShapes([
                 {
@@ -94,55 +130,62 @@ export default function Canvas({
                     x: 100,
                     y: 100,
                     props: { geo: "rectangle", w: 100, h: 100 },
-                    meta: { name: "Rectangle 1", hidden: false, originalX: 100, originalY: 100 },
+                    meta: {
+                        name: "Rectangle 1",
+                        hidden: false,
+                        originalX: 100,
+                        originalY: 100,
+                    },
                 },
             ]);
         }
 
-        const handleShapeCreate: StoreBeforeCreateHandler<TLUnknownShape> = (shape) => {
+        const handleShapeCreate: StoreBeforeCreateHandler<TLUnknownShape> = (
+            shape
+        ) => {
             if (!shape.meta || !("name" in shape.meta)) {
-                const updatedShape: TLUnknownShape = {
+                return {
                     ...shape,
                     meta: {
                         ...shape.meta,
-                        name: `${shape.type} ${editor.getCurrentPageShapes().length + 1}`,
+                        name: `${shape.type} ${editor.getCurrentPageShapes().length + 1
+                            }`,
                         hidden: false,
                         originalX: shape.x,
                         originalY: shape.y,
                     },
                 };
-                return updatedShape;
             }
             return shape;
         };
 
-        const unsubscribe = editor.sideEffects.registerBeforeCreateHandler("shape", handleShapeCreate);
-        saveCanvasState();
+        const unsubscribe = editor.sideEffects.registerBeforeCreateHandler(
+            "shape",
+            handleShapeCreate
+        );
+
+        debouncedSave();
 
         return () => {
             unsubscribe();
         };
-    }, [editorRef, saveCanvasState]);
+    }, [editorRef, debouncedSave]);
 
     // Save canvas state on user changes
     const handleStoreChange = useCallback(
-        ({ changes, source }: { changes: RecordsDiff<TLRecord>; source: ChangeSource }) => {
+        ({ source }: { changes: RecordsDiff<TLRecord>; source: ChangeSource }) => {
             if (source === "user") {
-                saveCanvasState();
+                debouncedSave();
             }
         },
-        [saveCanvasState]
+        [debouncedSave]
     );
 
     useEffect(() => {
         if (!editorRef.current) return;
         const editor = editorRef.current;
-
         const unsubscribe = editor.store.listen(handleStoreChange, { scope: "all" });
-
-        return () => {
-            unsubscribe();
-        };
+        return () => unsubscribe();
     }, [editorRef, handleStoreChange]);
 
     // Handle Tldraw mount
@@ -151,10 +194,12 @@ export default function Canvas({
             editorRef.current = editor;
             editor.setCurrentTool("select");
             editor.updateInstanceState({ isGridMode: showGrid });
+
             const canvas = editor.getContainer().querySelector("canvas");
             if (canvas) {
                 canvasRef.current = canvas;
             }
+
             editor.focus();
         },
         [editorRef, canvasRef, showGrid]
@@ -173,10 +218,18 @@ export default function Canvas({
                 components={components}
                 persistenceKey="bezalel-board"
                 getShapeVisibility={(shape: TLUnknownShape) =>
-                    shape.meta?.force_show ? "visible" : shape.meta?.hidden ? "hidden" : "inherit"
+                    shape.meta?.force_show
+                        ? "visible"
+                        : shape.meta?.hidden
+                            ? "hidden"
+                            : "inherit"
                 }
             >
-                <canvas ref={canvasRef} style={{ display: "none" }} aria-hidden="true" />
+                <canvas
+                    ref={canvasRef}
+                    style={{ display: "none" }}
+                    aria-hidden="true"
+                />
             </Tldraw>
         </div>
     );
