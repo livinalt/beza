@@ -1,351 +1,377 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import io, { Socket } from "socket.io-client";
 import { toast } from "sonner";
 import { Editor } from "@tldraw/tldraw";
-import { Home, Sparkles, Link as LinkIcon } from "lucide-react";
+import { Home, Sparkles, Link as LinkIcon, Image as ImageIcon } from "lucide-react";
 import ThemeToggle from "@/components/ThemeToggle";
 import Canvas from "@/components/Canvas";
 import LayersPanel from "@/components/LayersPanel";
-import { PageData } from "@/lib/types";
+import type { DaydreamOneShotResponse } from "@/lib/types";
+import type { TLShapeId } from "@tldraw/tlschema";
 
-const generateShortId = () => {
-    const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
-    const segmentLength = 3;
-    const segments = 3;
-    let id = "";
-    for (let i = 0; i < segments; i++) {
-        for (let j = 0; j < segmentLength; j++) {
-            id += chars.charAt(Math.floor(Math.random() * chars.length));
-        }
-        if (i < segments - 1) id += "-";
-    }
-    return id;
+
+/**
+ * Production-ready Board page (TypeScript-clean)
+ *
+ * Notes:
+ * - Uses /api/daydream/oneshot (server attaches API key)
+ * - Strong typing: no `any`. Uses `unknown` + guards where needed.
+ * - Expects types/daydream.ts to export DaydreamOneShotResponse
+ */
+
+/* ---------- Local types ---------- */
+type PageData = {
+    id: string;
+    name: string;
+    canvasData: unknown | null; // keep generic to avoid tldraw internal type mismatch
 };
 
-export default function Board() {
+/* ---------- Helpers ---------- */
+const generateShortId = (): string => {
+    const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+    return Array.from({ length: 3 }, () =>
+        Array.from({ length: 3 }, () => chars[Math.floor(Math.random() * chars.length)]).join("")
+    ).join("-");
+};
+
+const DEFAULT_REQUEST_TIMEOUT = 30_000;
+
+async function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, timeout = DEFAULT_REQUEST_TIMEOUT) {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeout);
+    try {
+        const res = await fetch(input, { ...init, signal: controller.signal });
+        return res;
+    } finally {
+        clearTimeout(id);
+    }
+}
+
+function extractImageUrlFromDaydreamResponse(res: unknown): string | null {
+    if (!res || typeof res !== "object") return null;
+    const r = res as DaydreamOneShotResponse;
+
+    if (typeof (r).output_url === "string") return (r).output_url;
+    if (Array.isArray(r.outputs) && typeof r.outputs[0]?.url === "string") return r.outputs[0].url;
+    if (Array.isArray((r).images) && typeof (r).images[0]?.url === "string") return (r).images[0].url;
+    if (Array.isArray((r).data) && typeof (r).data[0]?.url === "string") return (r).data[0].url;
+    if (Array.isArray((r).result) && typeof (r).result[0]?.url === "string") return (r).result[0].url;
+
+    return null;
+}
+
+/* ---------- Component ---------- */
+export default function Board(): JSX.Element {
     const { roomId } = useParams();
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const editorRef = useRef<Editor | null>(null);
     const socketRef = useRef<Socket | null>(null);
     const lastSavedState = useRef<string | null>(null);
 
-    const initialPage = { id: generateShortId(), name: "Page 1", canvasData: null };
+    const initialPage: PageData = { id: generateShortId(), name: "Page 1", canvasData: null };
     const [pages, setPages] = useState<PageData[]>([initialPage]);
-    const [activePageId, setActivePageId] = useState(initialPage.id);
-    const [aiPrompt, setAiPrompt] = useState("");
-    const [showGrid, setShowGrid] = useState(true);
-    const [showRulers, setShowRulers] = useState(false);
-    const [isMounted, setIsMounted] = useState(false);
-    const [viewUrl, setViewUrl] = useState<string>("");
-    const [selectedShapes, setSelectedShapes] = useState<string[]>([]);
+    const [activePageId] = useState(initialPage.id); // setter not used — avoid unused var warning
 
+    const [aiPrompt, setAiPrompt] = useState<string>("");
+    const [generatePrompt, setGeneratePrompt] = useState<string>("");
+    const [showGrid] = useState<boolean>(true);
+    const [viewUrl, setViewUrl] = useState<string>("");
+
+    const [selectedShapes, setSelectedShapes] = useState<string[]>([]);
+    const [isEnhancing, setIsEnhancing] = useState<boolean>(false);
+    const [isGenerating, setIsGenerating] = useState<boolean>(false);
+
+    /* ---------- Save canvas state ---------- */
     const saveCanvasState = useCallback(() => {
-        if (!editorRef.current) return;
-        const snapshot = editorRef.current.store.getSnapshot();
-        const snapshotJSON = JSON.stringify(snapshot);
-        if (snapshotJSON === lastSavedState.current) return;
-        setPages((prevPages) =>
-            prevPages.map((p) => (p.id === activePageId ? { ...p, canvasData: snapshot } : p))
-        );
-        lastSavedState.current = snapshotJSON;
-        console.log("Canvas state saved, active page:", activePageId);
+        const editor = editorRef.current;
+        if (!editor) return;
+        try {
+            // tldraw snapshot type can be complex; store as unknown
+            const snapshot = editor.store.getSnapshot();
+            const snapshotJSON = JSON.stringify(snapshot);
+            if (snapshotJSON === lastSavedState.current) return;
+            setPages((prevPages) =>
+                prevPages.map((p) => (p.id === activePageId ? { ...p, canvasData: snapshot } : p))
+            );
+            lastSavedState.current = snapshotJSON;
+        } catch (err) {
+            if (err instanceof Error) console.error("Failed to save canvas snapshot:", err.message);
+            else console.error("Failed to save canvas snapshot:", err);
+        }
     }, [activePageId]);
 
-    const exportShapeAsImage = async (editor: Editor, shapeId: string) => {
+    /* ---------- Utilities: Export & Replace ---------- */
+    // Exports a shape to a full data URL (data:image/png;base64,...)
+    const exportShapeAsDataUrl = async (editor: Editor, shapeId: string): Promise<string | null> => {
         try {
-            const svg = await editor.getSvg([shapeId]);
-            if (!svg) {
-                console.error("No SVG for shape:", shapeId);
-                return null;
-            }
-
+            const svg = await editor.getSvg([shapeId as TLShapeId]);
+            if (!svg) return null;
             const svgString = new XMLSerializer().serializeToString(svg);
             const blob = new Blob([svgString], { type: "image/svg+xml" });
             const url = URL.createObjectURL(blob);
 
-            return new Promise<string>((resolve) => {
+            return await new Promise((resolve) => {
                 const img = new Image();
                 img.onload = () => {
                     const canvas = document.createElement("canvas");
-                    canvas.width = img.width || 200;
-                    canvas.height = img.height || 200;
+                    canvas.width = img.width || 512;
+                    canvas.height = img.height || 512;
                     const ctx = canvas.getContext("2d");
                     if (!ctx) {
-                        console.error("No canvas context");
+                        URL.revokeObjectURL(url);
                         resolve(null);
                         return;
                     }
                     ctx.drawImage(img, 0, 0);
-                    const dataUrl = canvas.toDataURL("image/png").replace(/^data:image\/png;base64,/, "");
+                    const dataUrl = canvas.toDataURL("image/png");
                     URL.revokeObjectURL(url);
                     resolve(dataUrl);
                 };
                 img.onerror = () => {
-                    console.error("Failed to load SVG:", shapeId);
-                    resolve(null);
                     URL.revokeObjectURL(url);
+                    resolve(null);
                 };
                 img.src = url;
             });
-        } catch (error) {
-            console.error("Export shape error:", error);
+        } catch (err: unknown) {
+            console.error("Export error:", err);
             return null;
         }
     };
 
-    const replaceShapeWithImage = (editor: Editor, shapeId: string, imageUrl: string) => {
-        const shape = editor.getShape(shapeId);
-        if (!shape) {
-            console.error("Shape not found:", shapeId);
-            return;
-        }
-        console.log("Replacing shape with enhanced image:", shapeId, imageUrl);
-        editor.updateShapes([
-            {
-                id: shape.id,
-                type: "image",
-                props: { w: shape.props.w || 200, h: shape.props.h || 200, url: imageUrl },
-            },
-        ]);
+    // Replace a shape with an image shape; safe property access
+    const replaceShapeWithImage = (editor: Editor, shapeId: string, imageUrl: string): void => {
+        const shape = editor.getShape(shapeId as TLShapeId);
+        if (!shape) return;
+        const props = shape.props as Record<string, unknown>;
+        const w = typeof props.w === "number" ? props.w : 200;
+        const h = typeof props.h === "number" ? props.h : 200;
+        editor.updateShapes([{ id: shape.id, type: "image", props: { w, h, url: imageUrl } }]);
     };
 
-    const handleEnhanceObjects = async () => {
+    /* ---------- OneShot API call ---------- */
+    const callOneShot = async (payload: Record<string, unknown>): Promise<DaydreamOneShotResponse> => {
+        const res = await fetchWithTimeout("/api/daydream/oneshot", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+
+        if (!res.ok) {
+            const bodyText = await res.text().catch(() => "");
+            throw new Error(`Daydream OneShot failed (${res.status}): ${bodyText}`);
+        }
+
+        const json = (await res.json()) as DaydreamOneShotResponse;
+        return json;
+    };
+
+    /* ---------- Enhance selected objects (image-to-image) ---------- */
+    const handleEnhanceObjects = async (): Promise<void> => {
         const editor = editorRef.current;
-        if (!editor || !aiPrompt) {
-            toast.error("Enter a prompt");
+        if (!editor) {
+            toast.error("Editor not ready");
             return;
         }
-
+        if (!aiPrompt.trim()) {
+            toast.error("Enter an enhancement prompt");
+            return;
+        }
         const selected = editor.getSelectedShapeIds();
-        if (selected.length === 0) {
-            toast.error("Select an object");
+        if (!selected?.length) {
+            toast.error("Select at least one shape to enhance");
             return;
         }
 
+        setIsEnhancing(true);
         try {
-            const streamResponse = await fetch("/api/daydream/stream", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ pipeline_id: "pip_qpUgXycjWF6YMeSL" }),
-            });
-
-            if (!streamResponse.ok) {
-                throw new Error("Failed to create stream");
-            }
-
-            const { id: streamId, output_url } = await streamResponse.json();
-
             for (const shapeId of selected) {
-                const dataUrl = await exportShapeAsImage(editor, shapeId);
+                const dataUrl = await exportShapeAsDataUrl(editor, shapeId);
                 if (!dataUrl) {
-                    toast.error("Failed to export shape");
+                    toast.error("Failed to export shape; skipping");
                     continue;
                 }
 
-                const promptResponse = await fetch(`/api/daydream/prompt`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        stream_id: streamId,
-                        prompt: aiPrompt,
-                        image: dataUrl,
-                    }),
-                });
-
-                if (!promptResponse.ok) {
-                    throw new Error("Failed to submit prompt");
+                const result = await callOneShot({ prompt: aiPrompt, image: dataUrl });
+                const imageUrl = extractImageUrlFromDaydreamResponse(result);
+                if (!imageUrl) {
+                    toast.error("No image URL returned for shape; skipping");
+                    continue;
                 }
 
-                const result = await promptResponse.json();
-                const enhancedImageUrl = result.output_url || `data:image/png;base64,${dataUrl}`;
-                replaceShapeWithImage(editor, shapeId, enhancedImageUrl);
+                replaceShapeWithImage(editor, shapeId, imageUrl);
             }
 
             saveCanvasState();
-            toast.success("Object(s) enhanced!");
-        } catch (error: any) {
-            toast.error(`Enhance failed: ${error.message}`);
+            toast.success("Object(s) enhanced");
+        } catch (err) {
+            if (err instanceof Error) toast.error(`Enhance failed: ${err.message}`);
+            else toast.error("Enhance failed");
+            console.error("EnhanceObjects error:", err);
+        } finally {
+            setIsEnhancing(false);
         }
     };
 
-    const handleAddPage = () => {
-        const newPage = { id: generateShortId(), name: `Page ${pages.length + 1}`, canvasData: null };
-        setPages((prev) => [...prev, newPage]);
-        setActivePageId(newPage.id);
-        lastSavedState.current = null;
-        if (editorRef.current) {
-            editorRef.current.history.clear();
-            editorRef.current.store.clear();
-        }
-        saveCanvasState();
-    };
-
-    const handleRenamePage = (id: string, newName: string) => {
-        if (newName.trim() === "") {
-            toast.error("Page name cannot be empty.");
+    /* ---------- Generate new image (text-to-image) ---------- */
+    const handleGenerateImage = async (): Promise<void> => {
+        const editor = editorRef.current;
+        if (!editor) {
+            toast.error("Editor not ready");
             return;
         }
-        setPages((prev) => prev.map((p) => (p.id === id ? { ...p, name: newName } : p)));
-    };
-
-    const handleDeletePage = (id: string) => {
-        if (pages.length === 1) {
-            toast.error("Cannot delete the last page.");
+        if (!generatePrompt.trim()) {
+            toast.error("Enter a generation prompt");
             return;
         }
-        setPages((prev) => {
-            const remaining = prev.filter((p) => p.id !== id);
-            if (activePageId === id) {
-                setActivePageId(remaining[0].id);
-                lastSavedState.current = null;
+
+        setIsGenerating(true);
+        try {
+            const result = await callOneShot({ prompt: generatePrompt });
+            const imageUrl = extractImageUrlFromDaydreamResponse(result);
+            if (!imageUrl) {
+                toast.error("No image URL returned from OneShot");
+                return;
             }
-            return remaining;
-        });
+
+            editor.createShapes([
+                {
+                    type: "image",
+                    x: 100,
+                    y: 100,
+                    props: { w: 200, h: 200, url: imageUrl },
+                },
+            ]);
+
+            saveCanvasState();
+            toast.success("Image generated and added to canvas");
+        } catch (err) {
+            if (err instanceof Error) toast.error(`Generate failed: ${err.message}`);
+            else toast.error("Generate failed");
+            console.error("GenerateImage error:", err);
+        } finally {
+            setIsGenerating(false);
+        }
     };
 
+    /* ---------- Effects ---------- */
     useEffect(() => {
         if (!editorRef.current) return;
-
-        const unsubscribe = editorRef.current.store.listen(
-            (changes) => {
-                if (changes.source === "user" && changes.changes.updated["tl:selection"]) {
-                    const selected = editorRef.current?.getSelectedShapeIds() || [];
-                    setSelectedShapes(selected);
-                    console.log("Selection changed, selected shapes:", selected);
-                }
-            },
-            { scope: "selection" }
-        );
-
+        const unsubscribe = editorRef.current.store.listen(() => {
+            // listen to selection changes; selection id path may vary so we just fetch selected ids
+            const selected = editorRef.current?.getSelectedShapeIds() || [];
+            setSelectedShapes(selected);
+        });
         return () => {
-            unsubscribe();
-            console.log("Unsubscribed from selection changes");
+            try {
+                unsubscribe();
+            } catch (e) {
+                // sometimes unsubscribe may throw if editor destroyed early
+            }
         };
     }, []);
 
     useEffect(() => {
-        if (!editorRef.current) return;
-        const activePage = pages.find((p) => p.id === activePageId);
-        if (!activePage) return;
-
-        const snapshotJSON = JSON.stringify(activePage.canvasData);
-        if (snapshotJSON === lastSavedState.current) return;
-
-        if (!activePage.canvasData) {
-            editorRef.current.history.clear();
-            editorRef.current.store.clear();
-            lastSavedState.current = null;
-            return;
-        }
-
-        editorRef.current.store.loadSnapshot(activePage.canvasData);
-        lastSavedState.current = snapshotJSON;
-    }, [activePageId]);
-
-    useEffect(() => {
-        setIsMounted(true);
         if (typeof window !== "undefined") {
             setViewUrl(`${window.location.origin}/board/${roomId}/view`);
         }
     }, [roomId]);
 
     useEffect(() => {
-        const socket = io(process.env.NEXT_PUBLIC_SIGNALING_URL || "http://localhost:3001", {
+        const socket = io(process.env.NEXT_PUBLIC_SIGNALING_URL ?? "http://localhost:3001", {
             reconnectionDelay: 5000,
             reconnectionAttempts: 10,
         });
         socketRef.current = socket;
-        socket.on("connect", () => {
-            socket.emit("joinSession", roomId);
-            console.log("Socket connected, joined room:", roomId);
-        });
-        socket.on("connect_error", (error) => {
-            console.error("Socket connect error:", error.message);
-            toast.error("Failed to connect to server. Retrying...");
-        });
+        socket.on("connect", () => socket.emit("joinSession", roomId));
+        socket.on("connect_error", (err) => console.warn("Socket connect error:", err));
         return () => {
-            socket.disconnect();
+            try {
+                socket.disconnect();
+            } catch (e) {
+                /* ignore */
+            }
         };
     }, [roomId]);
 
-    const copyLink = () => {
-        if (!viewUrl) return;
-        navigator.clipboard.writeText(viewUrl);
-        toast.success("View link copied to clipboard!");
-    };
-
+    /* ---------- UI ---------- */
     if (!roomId || typeof roomId !== "string") {
-        return <div className="text-red-500">Error: Invalid or missing roomId</div>;
+        return <div className="text-red-500 p-4">Error: Invalid or missing roomId</div>;
     }
 
     return (
         <div className="relative w-screen h-screen bg-neutral-100 dark:bg-zinc-900">
+            {/* Header */}
             <header className="fixed top-0 left-0 right-0 h-14 z-[9999] flex items-center justify-between px-4 bg-white/80 dark:bg-zinc-900/80 backdrop-blur-md border-b border-gray-200 dark:border-zinc-700">
                 <div className="flex items-center gap-3">
                     <Link href="/" title="Back to Home">
-                        <Home className="w-5 h-5 text-gray-800 dark:text-gray-200 hover:text-blue-600 dark:hover:text-blue-400 transition" />
+                        <Home className="w-5 h-5" />
                     </Link>
-                    <h1 className="text-sm font-semibold text-gray-800 dark:text-gray-200">
-                        Bezalel Board
-                    </h1>
+                    <h1 className="text-sm font-semibold">Bezalel Board</h1>
                     <span className="text-xs text-gray-500 dark:text-gray-400">/ {roomId}</span>
                 </div>
+
                 <div className="flex items-center gap-2">
-                    <div
-                        className="flex items-center gap-2 z-[10001]"
-                        onMouseDown={(e) => e.stopPropagation()}
-                        onClick={(e) => e.stopPropagation()}
+                    <input
+                        aria-label="Enhance object prompt"
+                        placeholder="Enhance object..."
+                        value={aiPrompt}
+                        onChange={(e) => setAiPrompt(e.target.value)}
+                        className="text-xs border rounded px-2 py-1 w-40"
+                    />
+                    <button
+                        onClick={handleEnhanceObjects}
+                        disabled={!aiPrompt.trim() || selectedShapes.length === 0 || isEnhancing}
+                        className="px-2 py-1 bg-green-100 hover:bg-green-200 rounded disabled:opacity-50"
                     >
-                        <input
-                            tabIndex={0}
-                            title="Object enhancement prompt"
-                            placeholder="Object prompt..."
-                            value={aiPrompt}
-                            onChange={(e) => setAiPrompt(e.target.value)}
-                            className="text-xs text-gray-800 dark:text-gray-200 placeholder-gray-400 
-                         bg-gray-50 dark:bg-zinc-800 border border-gray-200 
-                         dark:border-zinc-700 rounded px-2 py-1 w-40 
-                         focus:outline-none focus:ring-1 focus:ring-green-400"
-                        />
-                        <button
-                            title="Enhance Selected Objects"
-                            disabled={!aiPrompt.trim() || selectedShapes.length === 0}
-                            onClick={handleEnhanceObjects}
-                            className={`w-8 h-8 flex items-center justify-center rounded-md transition 
-                         ${aiPrompt.trim() && selectedShapes.length > 0
-                                    ? "hover:bg-green-50 cursor-pointer bg-green-100"
-                                    : "opacity-50 cursor-not-allowed"
-                                }`}
-                        >
-                            <Sparkles className="w-4 h-4 text-green-600" />
-                        </button>
-                        <button
-                            title="Copy View Link"
-                            onClick={copyLink}
-                            className="w-8 h-8 flex items-center justify-center rounded-md transition bg-blue-100 hover:bg-blue-200"
-                        >
-                            <LinkIcon className="w-4 h-4 text-blue-600" />
-                        </button>
-                    </div>
+                        <Sparkles className="w-4 h-4 text-green-600" />
+                    </button>
+
+                    <input
+                        aria-label="Generate image prompt"
+                        placeholder="Generate image..."
+                        value={generatePrompt}
+                        onChange={(e) => setGeneratePrompt(e.target.value)}
+                        className="text-xs border rounded px-2 py-1 w-40"
+                    />
+                    <button
+                        onClick={handleGenerateImage}
+                        disabled={!generatePrompt.trim() || isGenerating}
+                        className="px-2 py-1 bg-blue-100 hover:bg-blue-200 rounded disabled:opacity-50"
+                    >
+                        <ImageIcon className="w-4 h-4 text-blue-600" />
+                    </button>
+
+                    <button
+                        onClick={() => {
+                            navigator.clipboard?.writeText(viewUrl || "");
+                            toast.success("View link copied!");
+                        }}
+                        className="w-8 h-8 flex items-center justify-center rounded-md bg-blue-100 hover:bg-blue-200"
+                    >
+                        <LinkIcon className="w-4 h-4 text-blue-600" />
+                    </button>
+
                     <ThemeToggle />
                 </div>
             </header>
 
+            {/* Main */}
             <main className="absolute top-14 bottom-0 left-0 right-48 flex">
                 <div className="flex-1 relative">
                     <Canvas
                         showGrid={showGrid}
                         canvasRef={canvasRef}
-                        editorRef={editorRef}
+                        editorRef={editorRef as unknown as React.RefObject<Editor>} // cast to satisfy LayersPanel contract
                         saveCanvasState={saveCanvasState}
                     />
                 </div>
 
-                <LayersPanel editorRef={editorRef} />
+                <LayersPanel editorRef={editorRef as unknown as React.RefObject<Editor>} />
             </main>
         </div>
     );
