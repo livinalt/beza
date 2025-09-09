@@ -1,10 +1,29 @@
 {
-  "document": {
-    "pages": {
-      "page:1": {
-        "shapes": {
-          "shape:1": { "type": "frame", "meta": { "name": "Test Shape" } }
-        }
+  "schemaVersion": 1,
+  "store": {
+    "document:document": {
+      "id": "document:document",
+      "typeName": "document"
+    },
+    "page:default": {
+      "id": "page:default",
+      "typeName": "page",
+      "name": "Page 1",
+      "index": "a1",
+      "meta": {}
+    },
+    "shape:1": {
+      "id": "shape:1",
+      "type": "geo",
+      "parentId": "page:default",
+      "x": 100,
+      "y": 100,
+      "props": { "geo": "rectangle", "w": 100, "h": 100 },
+      "meta": {
+        "name": "Rectangle 1",
+        "hidden": false,
+        "originalX": 100,
+        "originalY": 100
       }
     }
   }

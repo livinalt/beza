@@ -1,6 +1,6 @@
 "use client";
 
-import ThemeToggle from "@/components/ThemeToggle";
+// import ThemeToggle from "@/components/ThemeToggle";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { v4 as uuidv4 } from "uuid";
@@ -27,7 +27,7 @@ export default function Home() {
             </span>
           </div>
           <div className="flex items-center gap-4">
-            <ThemeToggle />
+            {/* <ThemeToggle /> */}
             <button
               className="rounded-xl bg-gradient-to-r from-indigo-600 to-fuchsia-500 text-white px-5 py-2 text-sm font-medium hover:scale-105 transition-all"
               onClick={createBoard}

@@ -1,13 +1,14 @@
+
 .layer-panel {
   position: fixed;
   right: 0;
   top: 3.5rem; /* Match header height */
   width: 12rem;
-  height: calc(100vh - 3.5rem);
+  height: calc(100vh - 3.5rem - 40px); /* Adjust for tldraw bottom panel */
   background: white;
   border-left: 1px solid #e5e7eb;
   padding: 0.5rem;
-  z-index: 9998;
+  z-index: 10000;
   overflow-y: auto;
 }
 
@@ -23,4 +24,23 @@
   display: flex;
   align-items: center;
   gap: 0.5rem;
+}
+
+/* Ensure tldraw's toolbar and page controller are positioned correctly */
+.tlui-layout__top {
+  z-index: 9998; /* Below LayersPanel but above canvas */
+  top: 3.5rem; /* Below custom header */
+}
+
+.tlui-layout__bottom {
+  z-index: 9998; /* Below LayersPanel */
+}
+
+/* Sync tldraw canvas with app theme */
+.tl-canvas {
+  background-color: #f5f5f5; /* Matches bg-neutral-100 */
+}
+
+.dark .tl-canvas {
+  background-color: #18181b; /* Matches bg-zinc-900 */
 }

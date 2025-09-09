@@ -1,8 +1,8 @@
-
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { Toaster } from "sonner";
 import { ThemeProvider } from "next-themes";
+import Script from "next/script";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -25,10 +25,24 @@ export default function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased bg-white dark:bg-zinc-900`}
-      >
-        <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
+      <head>
+        {/* Explicitly place theme script in <head> */}
+        <Script id="theme-script" strategy="beforeInteractive">
+          {`
+            (function() {
+              const theme = localStorage.getItem('theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+              document.documentElement.classList.add(theme);
+            })();
+          `}
+        </Script>
+      </head>
+      <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="system"
+          enableSystem
+          disableTransitionOnChange
+        >
           {children}
           <Toaster richColors position="top-right" />
         </ThemeProvider>
