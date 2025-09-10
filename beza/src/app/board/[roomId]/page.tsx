@@ -255,9 +255,37 @@ export default function Board(): React.ReactElement {
 
         setIsGenerating(true);
         try {
-            const result = await callOneShot({ prompt: generatePrompt });
-            const imageUrl = extractImageUrlFromDaydreamResponse(result);
-            if (!imageUrl) return;
+            const streamResponse = await fetch("/api/daydream/stream", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ pipeline_id: "pip_qpUgXycjWF6YMeSL" }),
+            });
+
+            if (!streamResponse.ok) {
+                throw new Error("Failed to create stream");
+            }
+
+            const { id: streamId } = await streamResponse.json();
+
+            const promptResponse = await fetch(`/api/daydream/prompt`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    stream_id: streamId,
+                    prompt: generatePrompt,
+                }),
+            });
+
+            if (!promptResponse.ok) {
+                throw new Error("Failed to submit prompt");
+            }
+
+            const result = await promptResponse.json();
+            const imageUrl = result.output_url;
+            if (!imageUrl) {
+                toast.error("No image generated");
+                return;
+            }
 
             editor.createShapes([
                 {
@@ -337,7 +365,7 @@ export default function Board(): React.ReactElement {
     return (
         <div className="relative w-screen h-screen bg-neutral-50 dark:bg-zinc-900 text-neutral-900 dark:text-neutral-100">
             {/* Header */}
-            <header className="fixed top-0 left-0 right-0 h-14 z-[9999] flex items-center justify-between px-4 bg-white/70 dark:bg-zinc-900/70 backdrop-blur-md border-b border-neutral-200 dark:border-zinc-700">
+            <header className="fixed top-0 left-0 right-0 h-14 z-[9999] flex items-center justify-between px-4 bg-white/70 dark:bg-zinc-900/70 backdrop-blur-md border-b border-neutral-200 dark:border-zinc-800">
                 <div className="flex items-center gap-3">
                     <Link href="/" title="Back to Home">
                         <Home className="w-5 h-5" />
@@ -351,7 +379,7 @@ export default function Board(): React.ReactElement {
                         placeholder="Enhance object..."
                         value={aiPrompt}
                         onChange={(e) => setAiPrompt(e.target.value)}
-                        className="text-xs border border-neutral-300 dark:border-zinc-700 rounded-lg px-2 py-1 w-40 bg-white dark:bg-zinc-800 text-neutral-900 dark:text-neutral-100"
+                        className="text-xs border border-neutral-300 dark:border-zinc-800 rounded-lg px-2 py-1 w-40 bg-white dark:bg-zinc-800 text-neutral-900 dark:text-neutral-100"
                     />
                     <button
                         onClick={handleEnhanceObjects}
@@ -370,7 +398,7 @@ export default function Board(): React.ReactElement {
                         placeholder="Generate image..."
                         value={generatePrompt}
                         onChange={(e) => setGeneratePrompt(e.target.value)}
-                        className="text-xs border border-neutral-300 dark:border-zinc-700 rounded-lg px-2 py-1 w-40 bg-white dark:bg-zinc-800 text-neutral-900 dark:text-neutral-100"
+                        className="text-xs border border-neutral-300 dark:border-zinc-800 rounded-lg px-2 py-1 w-40 bg-white dark:bg-zinc-800 text-neutral-900 dark:text-neutral-100"
                     />
                     <button
                         onClick={handleGenerateImage}
