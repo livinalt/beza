@@ -12,34 +12,29 @@ import {
     Link as LinkIcon,
     Image as ImageIcon,
 } from "lucide-react";
-// import ThemeToggle from "@/components/ThemeToggle";
 import Canvas from "@/components/Canvas";
 import LayersPanel from "@/components/LayersPanel";
-import type { DaydreamOneShotResponse } from "@/lib/types";
+import FloatingCam from "@/components/FloatingCam";
+import type { DaydreamStreamResponse } from "@/lib/types";
 
 // ---------------- Types ----------------
-
-// infer snapshot type directly from Editor
 type SerializedStoreSnapshot = ReturnType<Editor["store"]["getSnapshot"]>;
-
 type PageData = {
     id: string;
     name: string;
     canvasData: SerializedStoreSnapshot | null;
 };
-
-type DaydreamOneShotPayload = {
+type DaydreamPayload = {
+    stream_id: string;
     prompt: string;
-    image?: string; // base64 or dataURL
+    input_stream?: MediaStream;
 };
 
 // ---------------- Helpers ----------------
 const generateShortId = (): string => {
     const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
     return Array.from({ length: 3 }, () =>
-        Array.from({ length: 3 }, () =>
-            chars[Math.floor(Math.random() * chars.length)]
-        ).join("")
+        Array.from({ length: 3 }, () => chars[Math.floor(Math.random() * chars.length)]).join("")
     ).join("-");
 };
 
@@ -58,21 +53,6 @@ async function fetchWithTimeout(
     } finally {
         clearTimeout(id);
     }
-}
-
-function extractImageUrlFromDaydreamResponse(res: unknown): string | null {
-    if (!res || typeof res !== "object") return null;
-    const r = res as DaydreamOneShotResponse;
-    if (typeof r.output_url === "string") return r.output_url;
-    if (Array.isArray(r.outputs) && typeof r.outputs[0]?.url === "string")
-        return r.outputs[0].url;
-    if (Array.isArray(r.images) && typeof r.images[0]?.url === "string")
-        return r.images[0].url;
-    if (Array.isArray(r.data) && typeof r.data[0]?.url === "string")
-        return r.data[0].url;
-    if (Array.isArray(r.result) && typeof r.result[0]?.url === "string")
-        return r.result[0].url;
-    return null;
 }
 
 const blobToDataUrl = (blob: Blob): Promise<string> =>
@@ -101,23 +81,6 @@ const exportShapeAsDataUrl = async (
     }
 };
 
-const replaceShapeWithImage = (
-    editor: Editor,
-    shapeId: string,
-    imageUrl: string
-): void => {
-    const shape = editor.getShape(shapeId as TLShapeId);
-    if (!shape) return;
-
-    const props = shape.props as Partial<{ w: number; h: number; url: string }>;
-    const w = props.w ?? 200;
-    const h = props.h ?? 200;
-
-    editor.updateShapes([
-        { id: shape.id, type: "image", props: { w, h, url: imageUrl } },
-    ]);
-};
-
 // ---------------- Main Component ----------------
 export default function Board(): React.ReactElement {
     const { roomId } = useParams();
@@ -125,6 +88,9 @@ export default function Board(): React.ReactElement {
     const editorRef = useRef<Editor | null>(null);
     const socketRef = useRef<Socket | null>(null);
     const lastSavedState = useRef<string | null>(null);
+    const videoStreamRef = useRef<MediaStream | null>(null);
+    const [useEnhanced, setUseEnhanced] = useState<boolean>(false);
+    const videoElementRef = useRef<HTMLVideoElement | null>(null);
 
     const initialPage: PageData = {
         id: generateShortId(),
@@ -162,10 +128,7 @@ export default function Board(): React.ReactElement {
                 const newPages = prevPages.map((p) =>
                     p.id === activePageId ? { ...p, canvasData: snapshot } : p
                 );
-                localStorage.setItem(
-                    `canvas-state-${roomId}`,
-                    JSON.stringify(newPages)
-                );
+                localStorage.setItem(`canvas-state-${roomId}`, JSON.stringify(newPages));
                 console.log("Saved canvas state, pages:", newPages);
                 return newPages;
             });
@@ -178,10 +141,8 @@ export default function Board(): React.ReactElement {
     useEffect(() => {
         const editor = editorRef.current;
         if (!editor) return;
-
         const page = pages.find((p) => p.id === activePageId);
         if (!page?.canvasData) return;
-
         try {
             editor.store.loadSnapshot(page.canvasData);
         } catch (err) {
@@ -189,60 +150,7 @@ export default function Board(): React.ReactElement {
         }
     }, [pages, activePageId]);
 
-    const callOneShot = async (
-        payload: DaydreamOneShotPayload
-    ): Promise<DaydreamOneShotResponse> => {
-        const res = await fetchWithTimeout("/api/daydream/oneshot", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-        });
-        if (!res.ok) {
-            const bodyText = await res.text().catch(() => "");
-            throw new Error(
-                `Daydream OneShot failed (${res.status}): ${bodyText}`
-            );
-        }
-        return (await res.json()) as DaydreamOneShotResponse;
-    };
-
-    const handleEnhanceObjects = async (): Promise<void> => {
-        const editor = editorRef.current;
-        if (!editor) {
-            toast.error("Editor not ready");
-            return;
-        }
-        if (!aiPrompt.trim()) {
-            toast.error("Enter an enhancement prompt");
-            return;
-        }
-        const selected = editor.getSelectedShapeIds();
-        if (!selected?.length) {
-            toast.error("Select at least one shape to enhance");
-            return;
-        }
-
-        setIsEnhancing(true);
-        try {
-            for (const shapeId of selected) {
-                const dataUrl = await exportShapeAsDataUrl(editor, shapeId);
-                if (!dataUrl) continue;
-                const result = await callOneShot({ prompt: aiPrompt, image: dataUrl });
-                const imageUrl = extractImageUrlFromDaydreamResponse(result);
-                if (!imageUrl) continue;
-                replaceShapeWithImage(editor, shapeId, imageUrl);
-            }
-            saveCanvasState();
-            toast.success("Object(s) enhanced");
-        } catch (err) {
-            toast.error("Enhance failed");
-            console.error("EnhanceObjects error:", err);
-        } finally {
-            setIsEnhancing(false);
-        }
-    };
-
-    const handleGenerateImage = async (): Promise<void> => {
+    const handleGenerateVideo = async (): Promise<void> => {
         const editor = editorRef.current;
         if (!editor) {
             toast.error("Editor not ready");
@@ -252,21 +160,37 @@ export default function Board(): React.ReactElement {
             toast.error("Enter a generation prompt");
             return;
         }
+        if (!videoStreamRef.current) {
+            toast.error("Webcam stream not available");
+            return;
+        }
 
         setIsGenerating(true);
         try {
+            // Create stream
             const streamResponse = await fetch("/api/daydream/stream", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ pipeline_id: "pip_qpUgXycjWF6YMeSL" }),
             });
+            if (!streamResponse.ok) throw new Error("Failed to create stream");
+            const { id: streamId, whip_url } = await streamResponse.json();
 
-            if (!streamResponse.ok) {
-                throw new Error("Failed to create stream");
-            }
+            // Send webcam stream to WHIP endpoint
+            const peerConnection = new RTCPeerConnection();
+            videoStreamRef.current.getTracks().forEach(track => peerConnection.addTrack(track, videoStreamRef.current!));
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+            const whipResponse = await fetch(whip_url, {
+                method: "POST",
+                headers: { "Content-Type": "application/sdp" },
+                body: offer.sdp,
+            });
+            if (!whipResponse.ok) throw new Error("Failed to send stream to WHIP");
+            const answer = await whipResponse.text();
+            await peerConnection.setRemoteDescription({ type: "answer", sdp: answer });
 
-            const { id: streamId } = await streamResponse.json();
-
+            // Submit prompt
             const promptResponse = await fetch(`/api/daydream/prompt`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -275,59 +199,126 @@ export default function Board(): React.ReactElement {
                     prompt: generatePrompt,
                 }),
             });
-
-            if (!promptResponse.ok) {
-                throw new Error("Failed to submit prompt");
-            }
-
+            if (!promptResponse.ok) throw new Error("Failed to submit prompt");
             const result = await promptResponse.json();
-            const imageUrl = result.output_url;
-            if (!imageUrl) {
-                toast.error("No image generated");
+            const videoUrl = result.output_rtmp_url;
+            if (!videoUrl) {
+                toast.error("No video generated");
                 return;
             }
 
+            // Add video to canvas
             editor.createShapes([
                 {
-                    type: "image",
+                    type: "geo",
                     x: 100,
                     y: 100,
-                    props: { w: 200, h: 200, url: imageUrl },
+                    props: { geo: "rectangle", w: 280, h: 180 },
                     meta: {
-                        name: `Image ${editor.getCurrentPageShapes().length + 1}`,
+                        name: `Video ${editor.getCurrentPageShapes().length + 1}`,
                         hidden: false,
+                        videoUrl,
                     },
                 },
             ]);
 
+            // Update video element
+            if (videoElementRef.current) {
+                videoElementRef.current.src = videoUrl;
+                videoElementRef.current.play().catch(() => { });
+            }
+
             saveCanvasState();
-            toast.success("Image generated");
+            toast.success("Video stream added");
         } catch (err) {
-            toast.error("Generate failed");
-            console.error("GenerateImage error:", err);
+            toast.error("Video generation failed");
+            console.error("GenerateVideo error:", err);
         } finally {
             setIsGenerating(false);
         }
     };
 
-    useEffect(() => {
-        if (!editorRef.current) return;
+    const handleEnhanceVideo = async (): Promise<void> => {
         const editor = editorRef.current;
-        const handleSelectionChange = () => {
-            setSelectedShapes(editor.getSelectedShapeIds());
-        };
-        const unsubscribe: () => void = editor.store.listen(
-            handleSelectionChange,
-            { scope: "all" } // ✅ fixed: "selection" is not allowed
-        );
-        return () => {
-            try {
-                unsubscribe();
-            } catch {
-                /* ignore */
+        if (!editor) {
+            toast.error("Editor not ready");
+            return;
+        }
+        if (!aiPrompt.trim()) {
+            toast.error("Enter an enhancement prompt");
+            return;
+        }
+        if (!videoStreamRef.current) {
+            toast.error("Webcam stream not available");
+            return;
+        }
+
+        setIsEnhancing(true);
+        try {
+            // Create stream
+            const streamResponse = await fetch("/api/daydream/stream", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ pipeline_id: "pip_qpUgXycjWF6YMeSL" }),
+            });
+            if (!streamResponse.ok) throw new Error("Failed to create stream");
+            const { id: streamId, whip_url } = await streamResponse.json();
+
+            // Send webcam stream to WHIP endpoint
+            const peerConnection = new RTCPeerConnection();
+            videoStreamRef.current.getTracks().forEach(track => peerConnection.addTrack(track, videoStreamRef.current!));
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+            const whipResponse = await fetch(whip_url, {
+                method: "POST",
+                headers: { "Content-Type": "application/sdp" },
+                body: offer.sdp,
+            });
+            if (!whipResponse.ok) throw new Error("Failed to send stream to WHIP");
+            const answer = await whipResponse.text();
+            await peerConnection.setRemoteDescription({ type: "answer", sdp: answer });
+
+            // Submit prompt
+            const promptResponse = await fetch(`/api/daydream/prompt`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    stream_id: streamId,
+                    prompt: aiPrompt,
+                }),
+            });
+            if (!promptResponse.ok) throw new Error("Failed to submit prompt");
+            const result = await promptResponse.json();
+            const videoUrl = result.output_rtmp_url;
+            if (!videoUrl) {
+                toast.error("No enhanced video generated");
+                return;
             }
-        };
-    }, [editorRef]);
+
+            // Update video element
+            if (videoElementRef.current) {
+                videoElementRef.current.src = videoUrl;
+                videoElementRef.current.play().catch(() => { });
+            }
+
+            saveCanvasState();
+            toast.success("Video stream enhanced");
+        } catch (err) {
+            toast.error("Video enhancement failed");
+            console.error("EnhanceVideo error:", err);
+        } finally {
+            setIsEnhancing(false);
+        }
+    };
+
+    // Sync video stream and enhancement state from FloatingCam
+    const handleCamStateChange = useCallback((stream: MediaStream | null, enhanced: boolean) => {
+        videoStreamRef.current = stream;
+        setUseEnhanced(enhanced);
+        if (enhanced && aiPrompt.trim()) {
+            handleEnhanceVideo();
+        }
+    }, [aiPrompt]);
 
     useEffect(() => {
         if (typeof window !== "undefined") {
@@ -336,15 +327,13 @@ export default function Board(): React.ReactElement {
     }, [roomId]);
 
     useEffect(() => {
-        const socket = io(
-            process.env.NEXT_PUBLIC_SIGNALING_URL ?? "http://localhost:3001",
-            { reconnectionDelay: 5000, reconnectionAttempts: 10 }
-        );
+        const socket = io(process.env.NEXT_PUBLIC_SIGNALING_URL ?? "http://localhost:3001", {
+            reconnectionDelay: 5000,
+            reconnectionAttempts: 10,
+        });
         socketRef.current = socket;
         socket.on("connect", () => socket.emit("joinSession", roomId));
-        socket.on("connect_error", (err: Error) =>
-            console.warn("Socket connect error:", err)
-        );
+        socket.on("connect_error", (err: Error) => console.warn("Socket connect error:", err));
         return () => {
             try {
                 socket.disconnect();
@@ -355,16 +344,11 @@ export default function Board(): React.ReactElement {
     }, [roomId]);
 
     if (!roomId || typeof roomId !== "string") {
-        return (
-            <div className="text-red-500 p-4">
-                Error: Invalid or missing roomId
-            </div>
-        );
+        return <div className="text-red-500 p-4">Error: Invalid or missing roomId</div>;
     }
 
     return (
         <div className="relative w-screen h-screen bg-neutral-50 dark:bg-zinc-900 text-neutral-900 dark:text-neutral-100">
-            {/* Header */}
             <header className="fixed top-0 left-0 right-0 h-14 z-[9999] flex items-center justify-between px-4 bg-white/70 dark:bg-zinc-900/70 backdrop-blur-md border-b border-neutral-200 dark:border-zinc-800">
                 <div className="flex items-center gap-3">
                     <Link href="/" title="Back to Home">
@@ -373,43 +357,36 @@ export default function Board(): React.ReactElement {
                     <h1 className="text-sm font-semibold">Bezalel Board</h1>
                 </div>
                 <div className="flex items-center gap-2">
-                    {/* Enhance Input */}
                     <input
-                        aria-label="Enhance object prompt"
-                        placeholder="Enhance object..."
+                        aria-label="Enhance video prompt"
+                        placeholder="Enhance video..."
                         value={aiPrompt}
                         onChange={(e) => setAiPrompt(e.target.value)}
                         className="text-xs border border-neutral-300 dark:border-zinc-800 rounded-lg px-2 py-1 w-40 bg-white dark:bg-zinc-800 text-neutral-900 dark:text-neutral-100"
                     />
                     <button
-                        onClick={handleEnhanceObjects}
-                        title="Enhance selected shapes"
-                        disabled={
-                            !aiPrompt.trim() || selectedShapes.length === 0 || isEnhancing
-                        }
+                        onClick={handleEnhanceVideo}
+                        title="Enhance video stream"
+                        disabled={!aiPrompt.trim() || isEnhancing}
                         className="px-2 py-1 rounded-lg bg-gradient-to-r from-indigo-600 to-fuchsia-500 text-white disabled:opacity-40 transition-all hover:scale-105 active:scale-95"
                     >
                         <Sparkles className="w-4 h-4" />
                     </button>
-
-                    {/* Generate Input */}
                     <input
-                        aria-label="Generate image prompt"
-                        placeholder="Generate image..."
+                        aria-label="Generate video prompt"
+                        placeholder="Generate video..."
                         value={generatePrompt}
                         onChange={(e) => setGeneratePrompt(e.target.value)}
                         className="text-xs border border-neutral-300 dark:border-zinc-800 rounded-lg px-2 py-1 w-40 bg-white dark:bg-zinc-800 text-neutral-900 dark:text-neutral-100"
                     />
                     <button
-                        onClick={handleGenerateImage}
-                        title="Generate new image"
+                        onClick={handleGenerateVideo}
+                        title="Generate new video"
                         disabled={!generatePrompt.trim() || isGenerating}
                         className="px-2 py-1 rounded-lg bg-gradient-to-r from-indigo-600 to-fuchsia-500 text-white disabled:opacity-40 transition-all hover:scale-105 active:scale-95"
                     >
                         <ImageIcon className="w-4 h-4" />
                     </button>
-
-                    {/* Copy Link */}
                     <button
                         disabled
                         title="Share link"
@@ -423,9 +400,8 @@ export default function Board(): React.ReactElement {
                     </button>
                 </div>
             </header>
-
-            {/* Main */}
-            <main className="absolute top-14 bottom-0 left-0 right-48 flex">
+            <main className="absolute top-14 bottom-0 left-0 right-0 flex">
+                <FloatingCam onStateChange={handleCamStateChange} />
                 <div className="flex-1 relative">
                     <Canvas
                         showGrid={showGrid}
@@ -433,12 +409,17 @@ export default function Board(): React.ReactElement {
                         editorRef={editorRef as React.RefObject<Editor>}
                         saveCanvasState={saveCanvasState}
                     />
+                    <video
+                        ref={videoElementRef}
+                        muted
+                        playsInline
+                        className="absolute"
+                        style={{ display: "none" }}
+                    />
                     <div className="absolute top-16 left-4 text-xs text-neutral-500 dark:text-neutral-400">
-                        Selected Shapes: {selectedShapes.length} (
-                        {selectedShapes.join(", ")})
+                        Selected Shapes: {selectedShapes.length} ({selectedShapes.join(", ")})
                     </div>
                 </div>
-                <LayersPanel editorRef={editorRef as React.RefObject<Editor>} />
             </main>
         </div>
     );

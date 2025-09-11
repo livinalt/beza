@@ -39,10 +39,9 @@ async function pollForResult(
 
 export async function POST(req: Request) {
   try {
-    const { stream_id, prompt, image } = (await req.json()) as {
+    const { stream_id, prompt } = (await req.json()) as {
       stream_id: string;
       prompt: string;
-      image?: string;
     };
 
     if (!stream_id || !prompt) {
@@ -51,8 +50,6 @@ export async function POST(req: Request) {
         { status: 400 }
       );
     }
-
-    const pipeline = image ? "image-to-image" : "text-to-image";
 
     const response = await fetch(
       `https://api.daydream.live/beta/streams/${stream_id}/prompts`,
@@ -63,11 +60,9 @@ export async function POST(req: Request) {
           Authorization: `Bearer ${process.env.DAYDREAM_API_KEY ?? ""}`,
         },
         body: JSON.stringify({
-          pipeline,
-          model_id: "streamdiffusion",
+          pipeline: "live-video-to-video",
           params: {
             prompt,
-            ...(image ? { image } : {}),
             guidance_scale: 7.5,
             num_inference_steps: 50,
           },
@@ -86,10 +81,10 @@ export async function POST(req: Request) {
     const initial = (await response.json()) as {
       id?: string;
       status?: string;
+      output_rtmp_url?: string;
       [key: string]: unknown;
     };
 
-    // If job still running → poll for result
     if (initial.id && initial.status !== "succeeded") {
       const finalData = await pollForResult(stream_id, initial.id);
       return NextResponse.json(finalData);

@@ -16,8 +16,8 @@ export default function ThemeToggle() {
             onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
             aria-label="Toggle theme"
             className="relative flex items-center justify-center w-9 h-9 rounded-full 
-                 bg-white/70 hover:bg-white dark:bg-zinc-800/70 dark:hover:bg-zinc-700
-                 border border-zinc-200/50 dark:border-zinc-700/50
+                 bg-white/70 hover:bg-white dark:bg-zinc-800/70 dark:hover:bg-zinc-800
+                 border border-zinc-200/50 dark:border-zinc-800/50
                  transition-all"
         >
             {/* Sun Icon (visible in light mode) */}

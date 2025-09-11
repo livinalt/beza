@@ -8,7 +8,7 @@
   background: white;
   border-left: 1px solid #e5e7eb;
   padding: 0.5rem;
-  z-index: 10000;
+  z-index: 9999;
   overflow-y: auto;
 }
 
@@ -28,12 +28,12 @@
 
 /* Ensure tldraw's toolbar and page controller are positioned correctly */
 .tlui-layout__top {
-  z-index: 9998; /* Below LayersPanel but above canvas */
+  z-index: 9990; /* Below LayersPanel but above canvas */
   top: 3.5rem; /* Below custom header */
 }
 
 .tlui-layout__bottom {
-  z-index: 9998; /* Below LayersPanel */
+  z-index: 9990; /* Below LayersPanel */
 }
 
 /* Sync tldraw canvas with app theme */

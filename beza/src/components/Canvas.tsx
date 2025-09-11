@@ -15,20 +15,19 @@ import { getSnapshot } from "tldraw";
 import debounce from "lodash.debounce";
 import "@tldraw/tldraw/tldraw.css";
 import LayersPanel from "./LayersPanel";
+import FloatingCam from "./FloatingCam";
 
-// Dynamic import for Tldraw to disable SSR
-const Tldraw = dynamic(
-    () => import("@tldraw/tldraw").then((mod) => mod.Tldraw),
-    { ssr: false }
-);
-
+// Dynamic import for Tldraw
+const Tldraw = dynamic(() => import("@tldraw/tldraw").then((mod) => mod.Tldraw), {
+    ssr: false,
+});
 
 interface ShapeMeta {
     name?: string;
     hidden?: boolean;
     originalX?: number;
     originalY?: number;
-    force_show?: boolean;
+    videoUrl?: string;
 }
 
 interface CanvasProps {
@@ -48,23 +47,19 @@ export default function Canvas({
     const isMounted = useRef(false);
     const [isDarkMode, setIsDarkMode] = useState(false);
 
-    // ✅ Debounced save wrapper (non-blocking)
     const debouncedSave = useCallback(
         debounce(() => {
             const editor = editorRef.current;
             if (!editor) return;
-
             try {
                 const snapshot = getSnapshot(editor.store);
-
                 const save = () => {
                     try {
-                        saveCanvasState(); // calls your higher-level state updater
+                        saveCanvasState();
                     } catch (err) {
                         console.error("Failed to save snapshot:", err);
                     }
                 };
-
                 if (typeof window !== "undefined" && window.requestIdleCallback) {
                     window.requestIdleCallback(save);
                 } else {
@@ -77,52 +72,69 @@ export default function Canvas({
         [editorRef, saveCanvasState]
     );
 
-    // Detect dark mode
     useEffect(() => {
         if (typeof window === "undefined") return;
-
         const updateDarkMode = () => {
             setIsDarkMode(document.documentElement.classList.contains("dark"));
         };
-
         updateDarkMode();
         const observer = new MutationObserver(updateDarkMode);
         observer.observe(document.documentElement, {
             attributes: true,
             attributeFilter: ["class"],
         });
-
         return () => observer.disconnect();
     }, []);
 
-    // Define custom components for Tldraw
     const components: TLComponents = {
-        InFrontOfTheCanvas: () => <LayersPanel editorRef={editorRef} />,
+        InFrontOfTheCanvas: () => (
+            <>
+                <LayersPanel editorRef={editorRef} selectedShapes={[]} />
+                {editorRef.current?.getCurrentPageShapes().map(shape => {
+                    const meta = shape.meta as ShapeMeta;
+                    if (meta.videoUrl && !meta.hidden) {
+                        return (
+                            <video
+                                key={shape.id}
+                                src={meta.videoUrl}
+                                muted
+                                autoPlay
+                                loop
+                                playsInline
+                                style={{
+                                    position: "absolute",
+                                    left: shape.x,
+                                    top: shape.y,
+                                    width: (shape.props as any).w,
+                                    height: (shape.props as any).h,
+                                    zIndex: 1000,
+                                }}
+                            />
+                        );
+                    }
+                    return null;
+                })}
+            </>
+        ),
     };
 
-    // Handle container click to focus editor
     useEffect(() => {
         if (isMounted.current || !containerRef.current) return;
         isMounted.current = true;
-
         const container = containerRef.current;
         const handleClick = () => {
             editorRef.current?.focus();
         };
-
         container.addEventListener("click", handleClick, { passive: true });
         editorRef.current?.focus();
-
         return () => {
             container.removeEventListener("click", handleClick);
         };
     }, [editorRef]);
 
-    // Initial shape creation
     useEffect(() => {
         if (!editorRef.current) return;
         const editor = editorRef.current;
-
         if (editor.getCurrentPageShapes().length === 0) {
             editor.createShapes([
                 {
@@ -140,16 +152,13 @@ export default function Canvas({
             ]);
         }
 
-        const handleShapeCreate: StoreBeforeCreateHandler<TLUnknownShape> = (
-            shape
-        ) => {
+        const handleShapeCreate: StoreBeforeCreateHandler<TLUnknownShape> = (shape) => {
             if (!shape.meta || !("name" in shape.meta)) {
                 return {
                     ...shape,
                     meta: {
                         ...shape.meta,
-                        name: `${shape.type} ${editor.getCurrentPageShapes().length + 1
-                            }`,
+                        name: `${shape.type} ${editor.getCurrentPageShapes().length + 1}`,
                         hidden: false,
                         originalX: shape.x,
                         originalY: shape.y,
@@ -165,13 +174,11 @@ export default function Canvas({
         );
 
         debouncedSave();
-
         return () => {
             unsubscribe();
         };
     }, [editorRef, debouncedSave]);
 
-    // Save canvas state on user changes
     const handleStoreChange = useCallback(
         ({ source }: { changes: RecordsDiff<TLRecord>; source: ChangeSource }) => {
             if (source === "user") {
@@ -188,18 +195,15 @@ export default function Canvas({
         return () => unsubscribe();
     }, [editorRef, handleStoreChange]);
 
-    // Handle Tldraw mount
     const handleMount = useCallback(
         (editor: Editor) => {
             editorRef.current = editor;
             editor.setCurrentTool("select");
             editor.updateInstanceState({ isGridMode: showGrid });
-
             const canvas = editor.getContainer().querySelector("canvas");
             if (canvas) {
                 canvasRef.current = canvas;
             }
-
             editor.focus();
         },
         [editorRef, canvasRef, showGrid]
@@ -225,11 +229,7 @@ export default function Canvas({
                             : "inherit"
                 }
             >
-                <canvas
-                    ref={canvasRef}
-                    style={{ display: "none" }}
-                    aria-hidden="true"
-                />
+                <canvas ref={canvasRef} style={{ display: "none" }} aria-hidden="true" />
             </Tldraw>
         </div>
     );

@@ -1,4 +1,3 @@
-// LayersPanel.tsx
 import "./layer-panel.css";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Editor, TLShapeId, TLParentId, JsonObject } from "@tldraw/tldraw";
@@ -31,9 +30,10 @@ interface Layer {
 
 interface LayersPanelProps {
     editorRef: React.MutableRefObject<Editor | null>; // Updated to allow null
+    selectedShapes: TLShapeId[];  // Added selectedShapes prop to track selected layers
 }
 
-export default function LayersPanel({ editorRef }: LayersPanelProps) {
+export default function LayersPanel({ editorRef, selectedShapes }: LayersPanelProps) {
     const [layers, setLayers] = useState<Layer[]>([]);
     const [editingId, setEditingId] = useState<TLShapeId | null>(null);
     const [editName, setEditName] = useState<string>("");
@@ -123,10 +123,12 @@ export default function LayersPanel({ editorRef }: LayersPanelProps) {
                 y: newHidden ? (meta.originalY ?? shape.y) : meta.originalY,
             };
 
-            try {
-                editor.updateShapes([update]);
-            } catch (err) {
-                console.error("Failed to toggle visibility for shape:", id, err);
+            editor.updateShapes([update]);
+
+            // Remove hidden layer from selection to keep selection state sane
+            if (newHidden) {
+                const newSelection = editor.getSelectedShapeIds().filter((selId) => selId !== id);
+                editor.setSelectedShapes(newSelection);
             }
         },
         [editorRef]
@@ -184,11 +186,7 @@ export default function LayersPanel({ editorRef }: LayersPanelProps) {
                 type: shape.type,
                 meta: { ...shape.meta, name: editName.trim() },
             };
-            try {
-                editor.updateShapes([update]);
-            } catch (err) {
-                console.error("Failed to update shape name:", id, err);
-            }
+            editor.updateShapes([update]);
             setEditingId(null);
         },
         [editorRef, editName]
@@ -239,7 +237,8 @@ export default function LayersPanel({ editorRef }: LayersPanelProps) {
             {layers.map((layer) => (
                 <div
                     key={layer.id}
-                    className="flex items-center justify-between p-1 hover:bg-gray-100 dark:hover:bg-zinc-800 rounded"
+                    className={`flex items-center justify-between p-1 hover:bg-gray-100 dark:hover:bg-zinc-800 rounded ${selectedShapes.includes(layer.id) ? "bg-blue-200 dark:bg-blue-900" : ""
+                        }`}
                     style={{ paddingLeft: `${layer.depth * 12 + 8}px` }}
                     role="listitem"
                 >
@@ -283,12 +282,8 @@ export default function LayersPanel({ editorRef }: LayersPanelProps) {
                             aria-label={`Move layer ${layer.name} up`}
                             disabled={
                                 editorRef.current
-                                    ? editorRef.current.getSortedChildIdsForParent(
-                                        editorRef.current.getCurrentPageId()
-                                    ).indexOf(layer.id) >=
-                                    editorRef.current.getSortedChildIdsForParent(
-                                        editorRef.current.getCurrentPageId()
-                                    ).length - 1
+                                    ? editorRef.current.getSortedChildIdsForParent(editorRef.current.getCurrentPageId()).indexOf(layer.id) >=
+                                    editorRef.current.getSortedChildIdsForParent(editorRef.current.getCurrentPageId()).length - 1
                                     : true
                             }
                         >
@@ -301,9 +296,7 @@ export default function LayersPanel({ editorRef }: LayersPanelProps) {
                             aria-label={`Move layer ${layer.name} down`}
                             disabled={
                                 editorRef.current
-                                    ? editorRef.current.getSortedChildIdsForParent(
-                                        editorRef.current.getCurrentPageId()
-                                    ).indexOf(layer.id) <= 0
+                                    ? editorRef.current.getSortedChildIdsForParent(editorRef.current.getCurrentPageId()).indexOf(layer.id) <= 0
                                     : true
                             }
                         >
